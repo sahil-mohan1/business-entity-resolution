@@ -25,7 +25,7 @@ def clean_text(text: str) -> str:
 
 def combine_features(df: pd.DataFrame) -> pd.Series:
     """Concatenate business_name, business_address, and country into a single search string.
-    
+
     We explicitly select only the content columns (not entity_id) so that the S1-/S2-/S3-
     ID prefixes do not contaminate the TF-IDF character n-gram space.
     """
@@ -116,7 +116,6 @@ def generate_Candidates(
             matched_indices, _ = get_top_k_sparse(row, top_k, similarity_threshold)
             matched_cand_ids = candidate_ids[matched_indices].tolist()
 
-            # --- Issue 3 fix ---
             # Output column names must match what train_and_match.py reads and what
             # validate_submission.py checks: source1_entity_id / candidate_entity_ids.
             # IDs are written as a comma-separated string (not a Python list repr).
@@ -135,11 +134,24 @@ def generate_Candidates(
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Blocking / candidate generation stage.")
+    parser.add_argument("--s1",         default="dataset/test/test_source1.tsv")
+    parser.add_argument("--s2",         default="dataset/test/test_source2.tsv")
+    parser.add_argument("--s3",         default="dataset/test/test_source3.tsv")
+    parser.add_argument("--output",     default="output/candidate_pairs.tsv")
+    parser.add_argument("--top-k",      type=int,   default=15)
+    parser.add_argument("--threshold",  type=float, default=0.10)
+    parser.add_argument("--batch-size", type=int,   default=50)
+    args = parser.parse_args()
+
     generate_Candidates(
-        s1_path="dataset/test/test_source1.tsv",
-        s2_path="dataset/test/test_source2.tsv",
-        s3_path="dataset/test/test_source3.tsv",
-        output_path="output/candidate_pairs.tsv",
-        top_k=15,
-        similarity_threshold=0.10
+        s1_path=args.s1,
+        s2_path=args.s2,
+        s3_path=args.s3,
+        output_path=args.output,
+        top_k=args.top_k,
+        similarity_threshold=args.threshold,
+        batch_size=args.batch_size,
     )
