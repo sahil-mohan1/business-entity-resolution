@@ -1,0 +1,30 @@
+# Large dataset files — do not commit (hundreds of MB each)
+dataset/
+
+# Python virtual environment
+venv/
+.venv/
+env/
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Trained model artifacts (regenerate with train_model())
+output/er_model.pkl
+
+# Output TSVs are generated — include them selectively if needed
+# output/
+
+# macOS metadata
+.DS_Store
+
+# IDE folders
+.idea/
+.vscode/
+*.egg-info/
+dist/
+build/
