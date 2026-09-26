@@ -85,11 +85,38 @@ def generate_Candidates(
     s2_path: str,
     s3_path: str,
     output_path: str = "output/candidate_pairs.tsv",
-    top_k: int = 15,
-    similarity_threshold: float = 0.10,
+    top_k: int = 50,
+    similarity_threshold: float = 0.05,
     batch_size: int = 50
 ):
-    print("Loading datasets with strict memory management...")
+    """
+    Candidate generation wrapper.
+
+    Delegates to the new multi-strategy ``blocking.py`` when available (Stage 3+).
+    Falls back to the legacy single-strategy TF-IDF implementation below.
+    """
+    # --- Delegation to Stage 3 blocking module ---
+    import sys
+    _src_dir = os.path.dirname(os.path.abspath(__file__))
+    if _src_dir not in sys.path:
+        sys.path.insert(0, _src_dir)
+    try:
+        from blocking import generate_candidates as _gen
+        _gen(
+            s1_path=s1_path,
+            s2_path=s2_path,
+            s3_path=s3_path,
+            output_path=output_path,
+            top_k=top_k,
+            tfidf_threshold=similarity_threshold,
+            char_threshold=similarity_threshold,
+            batch_size=batch_size,
+        )
+        return
+    except ImportError:
+        print("blocking.py not found — falling back to legacy TF-IDF implementation.")
+    # --- Legacy TF-IDF fallback (original Stage 2 implementation) ---
+    print("[Legacy] Loading datasets with strict memory management...")
     df_s1 = load_processed_df(s1_path)
     df_s2 = load_processed_df(s2_path)
     df_s3 = load_processed_df(s3_path)
@@ -206,8 +233,8 @@ if __name__ == "__main__":
     parser.add_argument("--s2",         default="dataset/test/test_source2.tsv")
     parser.add_argument("--s3",         default="dataset/test/test_source3.tsv")
     parser.add_argument("--output",     default="output/candidate_pairs.tsv")
-    parser.add_argument("--top-k",      type=int,   default=15)
-    parser.add_argument("--threshold",  type=float, default=0.10)
+    parser.add_argument("--top-k",      type=int,   default=50)
+    parser.add_argument("--threshold",  type=float, default=0.05)
     parser.add_argument("--batch-size", type=int,   default=50)
     args = parser.parse_args()
 

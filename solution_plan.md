@@ -82,22 +82,27 @@ Also fixed: `entity_id` column now excluded from TF-IDF text to avoid S1-/S2-/S3
 - [x] `README.md` replaced — developer guide with setup steps, data placement, run commands, branch strategy, submission checklist
 - [x] All changes committed on `stage-2-infra` branch (ready to push when GitHub repo is created)
 - **Output**: ✅ Working baseline pipeline runs end-to-end; teammates can clone, install deps, and run `run_all.py`
+- [x] `stage-3-blocking` branch created from `main`; Stage 3 code (`normalize.py`, `blocking.py`, `blocking_recall.py`) added and committed
 
 ---
 
-### Stage 3 — Improved Blocking / Candidate Generation
+### Stage 3 — Improved Blocking / Candidate Generation 🔄 *in progress (branch: stage-3-blocking)*
 **Goal**: Maximize recall ceiling (every true match must be a candidate).
 
 Current approach: character n-gram TF-IDF + cosine similarity, top-15 per S1 entity.
 
 Improvements:
-- [ ] **Multi-index blocking**: Block separately on (a) country, (b) first token of business name, (c) postal code prefix
-- [ ] **Name normalization**: Expand abbreviations (Corp→corporation, Ltd→limited, Pvt→private, &→and, St→Street, Rd→Road)
-- [ ] **Address token extraction**: Extract city/state/PIN/zip tokens; use as secondary blocking key
-- [ ] **BM25 / TF-IDF hybrid**: Run BM25 on name tokens + char-ngram TF-IDF on full text; union candidates
-- [ ] **Country-aware filtering**: Only compare S1↔S2/S3 records within same country
+- [x] **`normalize.py`**: ASCII transliteration, entity suffix expansion (Inc→incorporated, Pvt→private…), address abbreviation expansion (St→street, Rd→road…), word abbreviation expansion (&→and, tech→technology…), `first_name_token()`, `extract_numeric_tokens()`
+- [x] **Multi-strategy blocking** (`blocking.py`): 4 strategies unioned per country:
+  - [x] **Strategy 1** — Word (1,2)-gram TF-IDF on abbreviation-expanded name+address+country
+  - [x] **Strategy 2** — Char (3,5)-gram TF-IDF on raw text (catches transliterations / Hindi/Tamil script similarity)
+  - [x] **Strategy 3** — First-name-token exact-match inverted index
+  - [x] **Strategy 4** — Numeric address-token index (ZIP/PIN/house numbers)
+- [x] **Country-aware filtering**: blocking done per country block (100% of GT pairs share country)
+- [x] **`generate_Candidates.py`** updated to delegate to `blocking.py`; default `top_k` raised 15→**50**, threshold lowered 0.10→**0.05**
+- [x] **`blocking_recall.py`**: measures blocking recall against training GT; targets ≥ 90%
+- [ ] **Run `blocking_recall.py`** on training data and record recall %, tune if below 90%
 - [ ] Target: ≥ **top-50** candidates per S1, recall ceiling > 90%
-- [ ] Measure blocking recall on training validation split
 - **Output**: `candidate_pairs.tsv` with high recall
 
 ---
