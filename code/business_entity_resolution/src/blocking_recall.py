@@ -1,4 +1,4 @@
-﻿"""
+"""
 blocking_recall.py
 ------------------
 Measure blocking recall on the training ground-truth split.
@@ -33,40 +33,37 @@ def load_ground_truth(gt_path):
     Returns a dict: {s1_id -> set of matched S2/S3 ids}.
     GT column format: matched_entity_ids = "S2-123,S2-456,S3-789"
     """
-    df = pd.read_csv(gt_path, sep='\t')
+    df = pd.read_csv(gt_path, sep='\t', low_memory=False)
 
-    # Identify id column
-    id_col = 'source1_entity_id' if 'source1_entity_id' in df.columns else df.columns[0]
+    id_col    = 'source1_entity_id' if 'source1_entity_id' in df.columns else df.columns[0]
     match_col = 'matched_entity_ids' if 'matched_entity_ids' in df.columns else df.columns[1]
 
-    gt = {}
-    for _, row in df.iterrows():
-        s1_id = str(row[id_col]).strip()
-        raw = str(row[match_col]).strip()
-        if raw and raw.lower() not in ('nan', ''):
-            matched = {x.strip() for x in raw.split(',') if x.strip()}
-        else:
-            matched = set()
-        gt[s1_id] = matched
-    return gt
+    # Vectorized split at C level, then one tight zip loop to build the dict
+    ids_arr    = df[id_col].astype(str).str.strip().values
+    splits_ser = df[match_col].astype(str).str.strip().str.split(',')
+
+    return {
+        s1_id: {x.strip() for x in parts if x.strip()} if not (isinstance(parts, list) and parts == ['nan']) else set()
+        for s1_id, parts in zip(ids_arr, splits_ser)
+        if parts is not None
+    }
 
 
 def load_candidates(cand_path):
     """Returns dict: {s1_id -> set of candidate ids}."""
-    df = pd.read_csv(cand_path, sep='\t')
-    id_col = 'source1_entity_id' if 'source1_entity_id' in df.columns else df.columns[0]
+    df = pd.read_csv(cand_path, sep='\t', low_memory=False)
+    id_col   = 'source1_entity_id'    if 'source1_entity_id'    in df.columns else df.columns[0]
     cand_col = 'candidate_entity_ids' if 'candidate_entity_ids' in df.columns else df.columns[1]
 
-    result = {}
-    for _, row in df.iterrows():
-        s1_id = str(row[id_col]).strip()
-        raw = str(row[cand_col]).strip()
-        if raw and raw.lower() not in ('nan', ''):
-            cands = {x.strip() for x in raw.split(',') if x.strip()}
-        else:
-            cands = set()
-        result[s1_id] = cands
-    return result
+    # Vectorized split at C level, then one tight zip loop to build the dict
+    ids_arr    = df[id_col].astype(str).str.strip().values
+    splits_ser = df[cand_col].astype(str).str.strip().str.split(',')
+
+    return {
+        s1_id: {x.strip() for x in parts if x.strip()} if not (isinstance(parts, list) and parts == ['nan']) else set()
+        for s1_id, parts in zip(ids_arr, splits_ser)
+        if parts is not None
+    }
 
 
 # ---------------------------------------------------------------------------
