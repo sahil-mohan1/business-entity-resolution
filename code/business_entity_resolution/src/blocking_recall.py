@@ -109,6 +109,8 @@ def main():
     parser.add_argument('--top-k',            type=int,   default=50)
     parser.add_argument('--threshold',        type=float, default=0.05)
     parser.add_argument('--max-bucket-cands', type=int,   default=50000)
+    parser.add_argument('--max-s1',           type=int,   default=0,
+                        help='Sample this many S1 entities for blocking (0=all)')
     parser.add_argument('--sample-n',         type=int,   default=0,
                         help='Sample N S1 entities from GT for fast recall estimate (0 = use all)')
     args = parser.parse_args()
@@ -129,6 +131,7 @@ def main():
             tfidf_threshold=args.threshold,
             char_threshold=args.threshold,
             max_bucket_cands=args.max_bucket_cands,
+            max_s1=args.max_s1,
         )
 
     print(f"\nLoading ground truth from {args.gt}...")
