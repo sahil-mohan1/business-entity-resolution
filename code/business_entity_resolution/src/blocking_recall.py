@@ -99,20 +99,22 @@ def compute_blocking_recall(gt, candidates, gt_path_for_country=None):
 
 def main():
     parser = argparse.ArgumentParser(description='Measure blocking recall on train GT')
-    parser.add_argument('--s1',         default='dataset/train/train_source1.tsv')
-    parser.add_argument('--s2',         default='dataset/train/train_source2.tsv')
-    parser.add_argument('--s3',         default='dataset/train/train_source3.tsv')
-    parser.add_argument('--gt',         default='dataset/train/train_ground_truth.tsv')
-    parser.add_argument('--candidates', default='output/train_candidate_pairs.tsv')
-    parser.add_argument('--generate',   action='store_true',
+    parser.add_argument('--s1',               default='dataset/train/train_source1.tsv')
+    parser.add_argument('--s2',               default='dataset/train/train_source2.tsv')
+    parser.add_argument('--s3',               default='dataset/train/train_source3.tsv')
+    parser.add_argument('--gt',               default='dataset/train/train_ground_truth.tsv')
+    parser.add_argument('--candidates',       default='output/train_candidate_pairs.tsv')
+    parser.add_argument('--generate',         action='store_true',
                         help='Run blocking.generate_candidates() first if candidate file missing')
-    parser.add_argument('--top-k',      type=int, default=50)
-    parser.add_argument('--threshold',  type=float, default=0.05)
+    parser.add_argument('--top-k',            type=int,   default=50)
+    parser.add_argument('--threshold',        type=float, default=0.05)
+    parser.add_argument('--max-bucket-cands', type=int,   default=50000)
+    parser.add_argument('--sample-n',         type=int,   default=0,
+                        help='Sample N S1 entities from GT for fast recall estimate (0 = use all)')
     args = parser.parse_args()
 
     if args.generate or not os.path.exists(args.candidates):
         print("Generating candidate pairs on training data...")
-        # Import must be relative to src/
         src_dir = os.path.dirname(os.path.abspath(__file__))
         if src_dir not in sys.path:
             sys.path.insert(0, src_dir)
@@ -126,11 +128,20 @@ def main():
             top_k=args.top_k,
             tfidf_threshold=args.threshold,
             char_threshold=args.threshold,
+            max_bucket_cands=args.max_bucket_cands,
         )
 
     print(f"\nLoading ground truth from {args.gt}...")
     gt = load_ground_truth(args.gt)
     print(f"  {len(gt):,} S1 entities in GT")
+
+    # --- Optional: sample a subset of S1 for fast recall estimation ---
+    if args.sample_n and args.sample_n < len(gt):
+        import random
+        random.seed(42)
+        sampled_keys = random.sample(list(gt.keys()), args.sample_n)
+        gt = {k: gt[k] for k in sampled_keys}
+        print(f"  Sampled {len(gt):,} S1 entities for recall estimation")
 
     print(f"Loading candidates from {args.candidates}...")
     candidates = load_candidates(args.candidates)
@@ -154,9 +165,9 @@ def main():
 
     target = 90.0
     if recall >= target:
-        print(f"\n✅ Recall {recall:.2f}% meets target of {target}%")
+        print(f"\n\u2705 Recall {recall:.2f}% meets target of {target}%")
     else:
-        print(f"\n⚠️  Recall {recall:.2f}% is below target of {target}%. Consider increasing --top-k or tuning thresholds.")
+        print(f"\n\u26a0\ufe0f  Recall {recall:.2f}% is below target of {target}%. Consider increasing --top-k or tuning thresholds.")
 
     return 0
 

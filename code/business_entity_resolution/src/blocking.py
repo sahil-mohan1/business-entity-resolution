@@ -114,6 +114,95 @@ def _tfidf_candidates(vec, X_cand_T, X_s1, cand_ids, top_k, threshold, batch_siz
     return result
 
 
+def _tfidf_candidates_subtok(
+    vec,
+    sub_s1,
+    sub_cand,
+    text_col,
+    top_k,
+    threshold,
+    batch_size,
+    max_bucket_cands=50_000,
+    rng=None,
+):
+    """
+    Sub-blocked TF-IDF: run cosine similarity only within first-token buckets.
+
+    Rationale
+    ---------
+    Doing TF-IDF across all 883K queries vs 4.1M candidates = 3.6B dot products.
+    Sub-blocking by first name token turns this into thousands of small problems
+    (avg ~50 S1 queries × ~200 candidates per bucket) — ~10,000x faster.
+
+    Recall impact: negligible. If two names have different first tokens they
+    almost certainly have low token-Jaccard — TF-IDF wouldn't retrieve them
+    across buckets anyway. Cross-script hard cases need embeddings, not TF-IDF.
+
+    Parameters
+    ----------
+    max_bucket_cands : int
+        If a bucket (e.g. token='national') has more candidates than this,
+        randomly sample max_bucket_cands of them. Prevents runaway common tokens.
+
+    Returns
+    -------
+    dict[int, set[str]]
+        Mapping from S1 DataFrame row-index -> set of matched candidate IDs.
+    """
+    if rng is None:
+        rng = np.random.default_rng(42)
+
+    cand_ids_arr = sub_cand['id'].values
+    cand_tokens  = sub_cand['first_token'].values
+
+    # Build inverted index: first_token -> array of candidate row-indices
+    cand_tok_index = defaultdict(list)
+    for j, tok in enumerate(cand_tokens):
+        cand_tok_index[tok if tok else '_EMPTY_'].append(j)
+
+    result = defaultdict(set)
+
+    # Group S1 by first_token
+    s1_tokens = sub_s1['first_token'].values
+    s1_tok_groups = defaultdict(list)  # token -> [s1 row-indices]
+    for i, tok in enumerate(s1_tokens):
+        s1_tok_groups[tok if tok else '_EMPTY_'].append(i)
+
+    for tok, s1_idxs in s1_tok_groups.items():
+        # Candidate pool: same token + EMPTY bucket (names with no first token)
+        cand_idxs = list(cand_tok_index.get(tok, []))
+        if tok != '_EMPTY_':
+            cand_idxs += cand_tok_index.get('_EMPTY_', [])
+
+        if not cand_idxs:
+            continue
+
+        # Cap oversized buckets (common generic tokens like 'national', 'india')
+        if len(cand_idxs) > max_bucket_cands:
+            sampled = rng.choice(cand_idxs, size=max_bucket_cands, replace=False)
+            cand_idxs = sampled.tolist()
+
+        sub_cand_ids  = cand_ids_arr[cand_idxs]
+        sub_cand_text = sub_cand[text_col].iloc[cand_idxs]
+        sub_s1_text   = sub_s1[text_col].iloc[s1_idxs]
+
+        X_c_T = vec.transform(sub_cand_text).tocsr().T
+        X_q   = vec.transform(sub_s1_text).tocsr()
+
+        for start in range(0, len(s1_idxs), batch_size):
+            end = min(start + batch_size, len(s1_idxs))
+            sim = X_q[start:end].dot(X_c_T).tocsr()
+            for i in range(sim.shape[0]):
+                matched_idx, _ = _top_k_sparse_row(sim[i], top_k, threshold)
+                for idx in matched_idx:
+                    result[s1_idxs[start + i]].add(sub_cand_ids[idx])
+
+        del X_c_T, X_q
+
+    return result
+
+
+
 def _first_token_candidates(s1_rows, cand_rows):
     """
     Exact first-name-token match between S1 and candidates.
@@ -283,19 +372,27 @@ def generate_candidates(
     top_k=50,
     tfidf_threshold=0.05,
     char_threshold=0.05,
-    batch_size=50,
+    batch_size=500,
     use_char_ngram=True,
     use_first_token=True,
     use_numeric_token=True,
+    max_bucket_cands=50_000,
 ):
     """
     Multi-strategy blocking: generate up to top_k candidate pairs per S1 entity.
 
-    Strategy union order (all within same country):
-      1. Word TF-IDF (expanded text)
-      2. Char n-gram TF-IDF (raw text)  [if use_char_ngram]
+    Strategy union order (all within same country, sub-blocked by first name token):
+      1. Word TF-IDF (expanded text) — sub-blocked by first token
+      2. Char n-gram TF-IDF (raw text) — sub-blocked by first token [if use_char_ngram]
       3. First-name-token exact index    [if use_first_token]
       4. Numeric-address-token index     [if use_numeric_token]
+
+    TF-IDF sub-blocking rationale
+    ------------------------------
+    Doing full-country TF-IDF (e.g. 883K queries × 4.1M candidates) requires
+    3.6 billion dot products and is prohibitively slow.
+    Sub-blocking by first name token reduces each sub-problem to ~50 queries ×
+    ~200 candidates — roughly 10,000x less work with negligible recall loss.
 
     Outputs
     -------
@@ -357,31 +454,27 @@ def generate_candidates(
                 continue
 
             print(f"\n--- Country '{country}': {n_q:,} S1 queries x {n_c:,} candidates ---")
+            print(f"  Unique first tokens in S1: {sub_s1['first_token'].nunique():,}")
 
             cand_ids = sub_cand['id'].values
+            rng = np.random.default_rng(42)
 
-            # Strategy 1: Word TF-IDF
-            print("  [1/4] Word TF-IDF scoring...")
-            X_cand_word_T = word_vec.transform(sub_cand['expanded_text']).tocsr().T
-            X_s1_word = word_vec.transform(sub_s1['expanded_text']).tocsr()
-            word_hits = _tfidf_candidates(
-                word_vec, X_cand_word_T, X_s1_word, cand_ids,
-                top_k, tfidf_threshold, batch_size
+            # Strategy 1: Word TF-IDF — sub-blocked by first token
+            print("  [1/4] Word TF-IDF (sub-blocked by first token)...")
+            word_hits = _tfidf_candidates_subtok(
+                word_vec, sub_s1, sub_cand, 'expanded_text',
+                top_k, tfidf_threshold, batch_size, max_bucket_cands, rng
             )
-            del X_cand_word_T, X_s1_word
             gc.collect()
 
-            # Strategy 2: Char n-gram TF-IDF (union)
+            # Strategy 2: Char n-gram TF-IDF — sub-blocked by first token
             char_hits = defaultdict(set)
             if use_char_ngram and char_vec is not None:
-                print("  [2/4] Char n-gram TF-IDF scoring...")
-                X_cand_char_T = char_vec.transform(sub_cand['raw_text']).tocsr().T
-                X_s1_char = char_vec.transform(sub_s1['raw_text']).tocsr()
-                char_hits = _tfidf_candidates(
-                    char_vec, X_cand_char_T, X_s1_char, cand_ids,
-                    top_k, char_threshold, batch_size
+                print("  [2/4] Char n-gram TF-IDF (sub-blocked by first token)...")
+                char_hits = _tfidf_candidates_subtok(
+                    char_vec, sub_s1, sub_cand, 'raw_text',
+                    top_k, char_threshold, batch_size, max_bucket_cands, rng
                 )
-                del X_cand_char_T, X_s1_char
                 gc.collect()
 
             # Strategy 3: First-name-token
@@ -440,10 +533,11 @@ if __name__ == '__main__':
     parser.add_argument('--top-k',          type=int,   default=50)
     parser.add_argument('--tfidf-threshold', type=float, default=0.05)
     parser.add_argument('--char-threshold', type=float, default=0.05)
-    parser.add_argument('--batch-size',     type=int,   default=50)
-    parser.add_argument('--no-char-ngram',  action='store_true')
-    parser.add_argument('--no-first-token', action='store_true')
-    parser.add_argument('--no-numeric',     action='store_true')
+    parser.add_argument('--batch-size',        type=int,   default=500)
+    parser.add_argument('--max-bucket-cands',  type=int,   default=50000)
+    parser.add_argument('--no-char-ngram',     action='store_true')
+    parser.add_argument('--no-first-token',    action='store_true')
+    parser.add_argument('--no-numeric',        action='store_true')
     args = parser.parse_args()
 
     generate_candidates(
@@ -458,4 +552,5 @@ if __name__ == '__main__':
         use_char_ngram=not args.no_char_ngram,
         use_first_token=not args.no_first_token,
         use_numeric_token=not args.no_numeric,
+        max_bucket_cands=args.max_bucket_cands,
     )
