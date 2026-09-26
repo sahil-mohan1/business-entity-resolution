@@ -127,7 +127,9 @@ def generate_Candidates(
         if (start_idx // batch_size) % 100 == 0:
             print(f"  Processed {end_idx}/{n_s1} Source-1 records...")
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     print(f"Saving results to {output_path}...")
     pd.DataFrame(results).to_csv(output_path, sep='\t', index=False)
     print("Done!")
