@@ -129,6 +129,7 @@ def train_model(
     train_dir: str = "dataset/train",
     model_path: str = "output/er_model.pkl",
     neg_ratio: int = 5,
+    _gt_override: str = None,  # Internal: used by evaluate.py to pass a split GT file
 ) -> xgb.XGBClassifier:
     """Train XGBoost on ground-truth pairs and save the fitted model to disk.
 
@@ -147,7 +148,7 @@ def train_model(
     s1_path = os.path.join(train_dir, "train_source1.tsv")
     s2_path = os.path.join(train_dir, "train_source2.tsv")
     s3_path = os.path.join(train_dir, "train_source3.tsv")
-    gt_path = os.path.join(train_dir, "train_ground_truth.tsv")
+    gt_path = _gt_override if _gt_override else os.path.join(train_dir, "train_ground_truth.tsv")
 
     print("Loading training entity data...")
     s1_dict   = load_data_dict(s1_path)
