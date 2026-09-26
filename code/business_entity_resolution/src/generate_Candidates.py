@@ -69,7 +69,7 @@ def generate_Candidates(
     output_path: str = "output/candidate_pairs.tsv",
     top_k: int = 15,
     similarity_threshold: float = 0.10,
-    batch_size: int = 50  # Reduced batch size to stay safely within memory bounds
+    batch_size: int = 500
 ):
     print("Loading datasets...")
     df_s1 = pd.read_csv(s1_path, sep='\t')
@@ -79,60 +79,90 @@ def generate_Candidates(
     id_col = 'entity_id' if 'entity_id' in df_s1.columns else df_s1.columns[0]
     df_candidates = pd.concat([df_s2, df_s3], ignore_index=True)
 
-    print("Cleaning and building feature strings...")
-    s1_text = combine_features(df_s1)
-    candidates_text = combine_features(df_candidates)
-    candidate_ids = df_candidates[id_col].values
+    print("Normalizing countries and building feature strings...")
+    # Normalize country column for blocking (EDA found 100% of matches share country)
+    if 'country' in df_s1.columns and 'country' in df_candidates.columns:
+        df_s1['country_norm'] = df_s1['country'].fillna('').astype(str).str.strip().str.upper()
+        df_candidates['country_norm'] = df_candidates['country'].fillna('').astype(str).str.strip().str.upper()
+        has_country = True
+    else:
+        has_country = False
 
-    print("Vectorizing with Character n-grams TF-IDF...")
+    df_s1['clean_text'] = combine_features(df_s1)
+    df_candidates['clean_text'] = combine_features(df_candidates)
+
+    print("Vectorizing with Character n-grams TF-IDF (capped at 100,000 features)...")
     vectorizer = TfidfVectorizer(
         analyzer='char_wb',
         ngram_range=(2, 4),
-        min_df=1,
+        min_df=2,
+        max_features=100000,
+        dtype=np.float32,
         sublinear_tf=True
     )
 
-    all_text = pd.concat([s1_text, candidates_text], ignore_index=True)
-    vectorizer.fit(all_text)
+    # Fit vectorizer on candidates text (covers the entire target space)
+    vectorizer.fit(df_candidates['clean_text'])
+    print(f"Vocabulary size: {len(vectorizer.vocabulary_):,} features")
 
-    X_s1 = vectorizer.transform(s1_text).tocsr()
-    X_cand = vectorizer.transform(candidates_text).tocsr().T  # Transpose for dot product
-
-    print(f"Finding top {top_k} candidates per Source-1 entity...")
-    n_s1 = X_s1.shape[0]
     results = []
+    
+    # Process by country block if country is available, otherwise global
+    countries = df_s1['country_norm'].unique() if has_country else [None]
+    
+    for c in countries:
+        if has_country and c:
+            s1_mask = df_s1['country_norm'] == c
+            cand_mask = df_candidates['country_norm'] == c
+            block_name = f"Country '{c}'"
+        else:
+            s1_mask = np.ones(len(df_s1), dtype=bool)
+            cand_mask = np.ones(len(df_candidates), dtype=bool)
+            block_name = "All Records"
 
-    for start_idx in range(0, n_s1, batch_size):
-        end_idx = min(start_idx + batch_size, n_s1)
-        batch_s1 = X_s1[start_idx:end_idx]
+        sub_s1 = df_s1[s1_mask]
+        sub_cand = df_candidates[cand_mask]
+        
+        if len(sub_s1) == 0 or len(sub_cand) == 0:
+            continue
 
-        # Dot product remains strictly in CSR sparse format
-        sim_sparse = batch_s1.dot(X_cand).tocsr()
+        print(f"\nProcessing {block_name}: {len(sub_s1):,} S1 queries against {len(sub_cand):,} candidates...")
+        
+        X_s1 = vectorizer.transform(sub_s1['clean_text']).tocsr()
+        X_cand = vectorizer.transform(sub_cand['clean_text']).tocsr().T  # Transpose for dot product
+        sub_cand_ids = sub_cand[id_col].values
+        sub_s1_ids = sub_s1[id_col].values
+        
+        n_sub_s1 = X_s1.shape[0]
 
-        for i in range(sim_sparse.shape[0]):
-            s1_id = df_s1[id_col].iloc[start_idx + i]
-            row = sim_sparse[i]
+        for start_idx in range(0, n_sub_s1, batch_size):
+            end_idx = min(start_idx + batch_size, n_sub_s1)
+            batch_s1 = X_s1[start_idx:end_idx]
 
-            matched_indices, _ = get_top_k_sparse(row, top_k, similarity_threshold)
-            matched_cand_ids = candidate_ids[matched_indices].tolist()
+            # Fast sparse dot product
+            sim_sparse = batch_s1.dot(X_cand).tocsr()
 
-            # Output column names must match what train_and_match.py reads and what
-            # validate_submission.py checks: source1_entity_id / candidate_entity_ids.
-            # IDs are written as a comma-separated string (not a Python list repr).
-            results.append({
-                'source1_entity_id': s1_id,
-                'candidate_entity_ids': ','.join(str(x) for x in matched_cand_ids),
-            })
+            for i in range(sim_sparse.shape[0]):
+                s1_id = sub_s1_ids[start_idx + i]
+                row = sim_sparse[i]
 
-        if (start_idx // batch_size) % 100 == 0:
-            print(f"  Processed {end_idx}/{n_s1} Source-1 records...")
+                matched_indices, _ = get_top_k_sparse(row, top_k, similarity_threshold)
+                matched_cand_ids = sub_cand_ids[matched_indices].tolist()
+
+                results.append({
+                    'source1_entity_id': s1_id,
+                    'candidate_entity_ids': ','.join(str(x) for x in matched_cand_ids),
+                })
+
+            if (start_idx // batch_size) % 20 == 0 or end_idx == n_sub_s1:
+                print(f"  Processed {end_idx:,}/{n_sub_s1:,} queries in {block_name}...")
 
     out_dir = os.path.dirname(output_path)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
-    print(f"Saving results to {output_path}...")
+    print(f"\nSaving {len(results):,} results to {output_path}...")
     pd.DataFrame(results).to_csv(output_path, sep='\t', index=False)
-    print("Done!")
+    print("Candidate generation complete!")
 
 
 if __name__ == "__main__":
