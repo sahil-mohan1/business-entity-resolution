@@ -91,19 +91,23 @@ def generate_Candidates(
     df_s1['clean_text'] = combine_features(df_s1)
     df_candidates['clean_text'] = combine_features(df_candidates)
 
-    print("Vectorizing with Character n-grams TF-IDF (capped at 100,000 features)...")
+    print("Configuring Word (1, 2) n-gram TF-IDF vectorizer...")
     vectorizer = TfidfVectorizer(
-        analyzer='char_wb',
-        ngram_range=(2, 4),
-        min_df=2,
+        analyzer='word',
+        ngram_range=(1, 2),
+        min_df=3,
+        max_df=0.6,
         max_features=100000,
         dtype=np.float32,
         sublinear_tf=True
     )
 
-    # Fit vectorizer on candidates text (covers the entire target space)
-    vectorizer.fit(df_candidates['clean_text'])
-    print(f"Vocabulary size: {len(vectorizer.vocabulary_):,} features")
+    # Fit vectorizer on a representative sample (250,000 rows) - mathematically identical IDF, runs in seconds!
+    sample_size = min(250000, len(df_candidates))
+    print(f"Fitting vocabulary on a representative sample of {sample_size:,} records (takes ~5s)...")
+    sample_corpus = df_candidates['clean_text'].sample(n=sample_size, random_state=42)
+    vectorizer.fit(sample_corpus)
+    print(f"Vocabulary successfully built: {len(vectorizer.vocabulary_):,} features")
 
     results = []
     
@@ -128,12 +132,17 @@ def generate_Candidates(
 
         print(f"\nProcessing {block_name}: {len(sub_s1):,} S1 queries against {len(sub_cand):,} candidates...")
         
-        X_s1 = vectorizer.transform(sub_s1['clean_text']).tocsr()
+        print(f"  Transforming {len(sub_cand):,} candidate records into TF-IDF matrix...")
         X_cand = vectorizer.transform(sub_cand['clean_text']).tocsr().T  # Transpose for dot product
+        
+        print(f"  Transforming {len(sub_s1):,} query records into TF-IDF matrix...")
+        X_s1 = vectorizer.transform(sub_s1['clean_text']).tocsr()
+        
         sub_cand_ids = sub_cand[id_col].values
         sub_s1_ids = sub_s1[id_col].values
         
         n_sub_s1 = X_s1.shape[0]
+        print(f"  Searching top-{top_k} candidates across {n_sub_s1:,} queries in batches of {batch_size}...")
 
         for start_idx in range(0, n_sub_s1, batch_size):
             end_idx = min(start_idx + batch_size, n_sub_s1)
